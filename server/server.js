@@ -8,36 +8,35 @@ const app = express();
 
 const PORT = process.env.PORT || 5000;
 
-const SYSTEM_PROMPT = `You are AskBot, a friendly and concise AI assistant. Be helpful and warm but get to the point. Keep answers short, usually 2-4 sentences, unless the user asks for detail. Use simple everyday language and avoid jargon. If you don't know something or aren't sure, say so plainly and never make things up. Don't pad answers with long intros or repeated summaries. Use short markdown for lists or code.`;
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
 
-// --------------------------------------------------
-// BASIC SECURITY / CONFIGURATION
-// --------------------------------------------------
+const SYSTEM_PROMPT = `You are AskBot, a friendly and concise AI assistant. Be helpful and warm but get to the point. Keep answers short, usually 2-4 sentences, unless the user asks for detail. Use simple everyday language and avoid jargon. If you don't know something or aren't sure, say so plainly and never make things up. Don't pad answers with long intros or repeated summaries. Use short markdown for lists or code.`;
 
 app.disable("x-powered-by");
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-    ],
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
   })
 );
 
-// Prevent extremely large request bodies
 app.use(
   express.json({
     limit: "50kb",
   })
 );
 
-// --------------------------------------------------
-// SIMPLE IN-MEMORY RATE LIMITER
-// --------------------------------------------------
-
 const requestLog = new Map();
-
 const RATE_LIMIT = 20;
 const RATE_WINDOW = 60 * 1000;
 
@@ -65,7 +64,6 @@ function isRateLimited(ip) {
   return recentRequests.length > RATE_LIMIT;
 }
 
-// Clean old IP entries periodically
 setInterval(() => {
   const now = Date.now();
 
@@ -82,11 +80,11 @@ setInterval(() => {
   }
 }, RATE_WINDOW);
 
-// --------------------------------------------------
-// REQUEST TIMEOUT
-// --------------------------------------------------
-
-async function fetchWithTimeout(url, options, timeout = 20000) {
+async function fetchWithTimeout(
+  url,
+  options,
+  timeout = 20000
+) {
   const controller = new AbortController();
 
   const timer = setTimeout(() => {
@@ -103,10 +101,6 @@ async function fetchWithTimeout(url, options, timeout = 20000) {
   }
 }
 
-// --------------------------------------------------
-// VALIDATE CHAT REQUEST
-// --------------------------------------------------
-
 function validateMessages(messages) {
   if (!Array.isArray(messages)) {
     return "Messages must be an array.";
@@ -116,7 +110,6 @@ function validateMessages(messages) {
     return "Please enter a message.";
   }
 
-  // Prevent excessive context
   if (messages.length > 16) {
     return "Too many messages in the conversation.";
   }
@@ -128,7 +121,11 @@ function validateMessages(messages) {
       return "Invalid message format.";
     }
 
-    if (!["user", "assistant"].includes(message.role)) {
+    if (
+      !["user", "assistant"].includes(
+        message.role
+      )
+    ) {
       return "Invalid message role.";
     }
 
@@ -149,7 +146,6 @@ function validateMessages(messages) {
     totalCharacters += content.length;
   }
 
-  // Protect against an unnecessarily huge conversation
   if (totalCharacters > 12000) {
     return "Conversation is too long. Please start a new chat.";
   }
@@ -157,29 +153,27 @@ function validateMessages(messages) {
   return null;
 }
 
-// --------------------------------------------------
-// GROQ
-// --------------------------------------------------
-
 async function callGroq(messages) {
   if (!process.env.GROQ_API_KEY) {
-    throw new Error("Groq API key is not configured.");
+    throw new Error(
+      "Groq API key is not configured."
+    );
   }
 
   if (!process.env.GROQ_MODEL) {
-    throw new Error("Groq model is not configured.");
+    throw new Error(
+      "Groq model is not configured."
+    );
   }
 
   const response = await fetchWithTimeout(
     "https://api.groq.com/openai/v1/chat/completions",
     {
       method: "POST",
-
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
       },
-
       body: JSON.stringify({
         model: process.env.GROQ_MODEL,
         messages,
@@ -190,43 +184,46 @@ async function callGroq(messages) {
   );
 
   if (!response.ok) {
-    throw new Error(`Groq HTTP ${response.status}`);
+    throw new Error(
+      `Groq HTTP ${response.status}`
+    );
   }
 
   const data = await response.json();
 
-  const reply = data?.choices?.[0]?.message?.content;
+  const reply =
+    data?.choices?.[0]?.message?.content;
 
   if (!reply || typeof reply !== "string") {
-    throw new Error("Groq returned an invalid response.");
+    throw new Error(
+      "Groq returned an invalid response."
+    );
   }
 
   return reply.trim();
 }
 
-// --------------------------------------------------
-// GEMINI FALLBACK
-// --------------------------------------------------
-
 async function callGemini(messages) {
   if (!process.env.GEMINI_API_KEY) {
-    throw new Error("Gemini API key is not configured.");
+    throw new Error(
+      "Gemini API key is not configured."
+    );
   }
 
   if (!process.env.GEMINI_MODEL) {
-    throw new Error("Gemini model is not configured.");
+    throw new Error(
+      "Gemini model is not configured."
+    );
   }
 
   const response = await fetchWithTimeout(
     "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     {
       method: "POST",
-
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.GEMINI_API_KEY}`,
       },
-
       body: JSON.stringify({
         model: process.env.GEMINI_MODEL,
         messages,
@@ -237,33 +234,31 @@ async function callGemini(messages) {
   );
 
   if (!response.ok) {
-    throw new Error(`Gemini HTTP ${response.status}`);
+    throw new Error(
+      `Gemini HTTP ${response.status}`
+    );
   }
 
   const data = await response.json();
 
-  const reply = data?.choices?.[0]?.message?.content;
+  const reply =
+    data?.choices?.[0]?.message?.content;
 
   if (!reply || typeof reply !== "string") {
-    throw new Error("Gemini returned an invalid response.");
+    throw new Error(
+      "Gemini returned an invalid response."
+    );
   }
 
   return reply.trim();
 }
 
-// --------------------------------------------------
-// CHAT ENDPOINT
-// --------------------------------------------------
-
 app.post("/api/chat", async (req, res) => {
-  const requestId = Math.random().toString(36).slice(2, 10);
+  const requestId =
+    Math.random().toString(36).slice(2, 10);
 
   try {
     const ip = getClientIp(req);
-
-    // -------------------------------
-    // Rate limiting
-    // -------------------------------
 
     if (isRateLimited(ip)) {
       return res.status(429).json({
@@ -272,13 +267,10 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // -------------------------------
-    // Validate request
-    // -------------------------------
-
     const { messages } = req.body || {};
 
-    const validationError = validateMessages(messages);
+    const validationError =
+      validateMessages(messages);
 
     if (validationError) {
       return res.status(400).json({
@@ -286,14 +278,12 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    // -------------------------------
-    // Keep only latest conversation
-    // -------------------------------
-
-    const recentMessages = messages.slice(-16).map((message) => ({
-      role: message.role,
-      content: message.content.trim(),
-    }));
+    const recentMessages = messages
+      .slice(-16)
+      .map((message) => ({
+        role: message.role,
+        content: message.content.trim(),
+      }));
 
     const conversation = [
       {
@@ -303,12 +293,9 @@ app.post("/api/chat", async (req, res) => {
       ...recentMessages,
     ];
 
-    // -------------------------------
-    // Try Groq
-    // -------------------------------
-
     try {
-      const reply = await callGroq(conversation);
+      const reply =
+        await callGroq(conversation);
 
       return res.json({
         reply,
@@ -321,12 +308,9 @@ app.post("/api/chat", async (req, res) => {
       );
     }
 
-    // -------------------------------
-    // Try Gemini fallback
-    // -------------------------------
-
     try {
-      const reply = await callGemini(conversation);
+      const reply =
+        await callGemini(conversation);
 
       return res.json({
         reply,
@@ -339,15 +323,10 @@ app.post("/api/chat", async (req, res) => {
       );
     }
 
-    // -------------------------------
-    // Both providers failed
-    // -------------------------------
-
     return res.status(503).json({
       error:
         "Our AI services are temporarily unavailable. Please try again in a moment.",
     });
-
   } catch (error) {
     console.error(
       `[${requestId}] Unexpected server error:`,
@@ -361,10 +340,6 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// --------------------------------------------------
-// HEALTH CHECK
-// --------------------------------------------------
-
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -372,40 +347,36 @@ app.get("/", (req, res) => {
   });
 });
 
-// --------------------------------------------------
-// HANDLE UNKNOWN ROUTES
-// --------------------------------------------------
-
 app.use((req, res) => {
   res.status(404).json({
-    error: "The requested endpoint does not exist.",
+    error:
+      "The requested endpoint does not exist.",
   });
 });
 
-// --------------------------------------------------
-// HANDLE INVALID JSON
-// --------------------------------------------------
+app.use(
+  (error, req, res, next) => {
+    if (
+      error instanceof SyntaxError &&
+      error.status === 400
+    ) {
+      return res.status(400).json({
+        error: "Invalid request format.",
+      });
+    }
 
-app.use((error, req, res, next) => {
-  if (error instanceof SyntaxError && error.status === 400) {
-    return res.status(400).json({
-      error: "Invalid request format.",
-    });
+    if (error.type === "entity.too.large") {
+      return res.status(413).json({
+        error: "Request is too large.",
+      });
+    }
+
+    next(error);
   }
-
-  if (error.type === "entity.too.large") {
-    return res.status(413).json({
-      error: "Request is too large.",
-    });
-  }
-
-  next(error);
-});
-
-// --------------------------------------------------
-// START SERVER
-// --------------------------------------------------
+);
 
 app.listen(PORT, () => {
-  console.log(`AskBot server running on http://localhost:${PORT}`);
+  console.log(
+    `AskBot server running on http://localhost:${PORT}`
+  );
 });
