@@ -197,7 +197,6 @@ function App() {
                   <div className="message-content">
                     <div className="message-author">{msg.role === "user" ? "You" : "AskBot"}</div>
                     <div className="message-text">{msg.content}</div>
-                    {msg.provider && <div className="provider-label"><span className="provider-check"><Icon name="check" size={11} /></span> Answered by {msg.provider}</div>}
                   </div>
                 </article>
               ))}
