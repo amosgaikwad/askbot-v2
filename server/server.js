@@ -18,17 +18,20 @@ const SYSTEM_PROMPT = `You are AskBot, a friendly and concise AI assistant. Be h
 
 app.disable("x-powered-by");
 
+
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
+        console.error("Blocked CORS origin:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },
   })
 );
+
 
 app.use(
   express.json({
