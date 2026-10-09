@@ -209,7 +209,7 @@ async function callGemini(messages) {
         model: process.env.GEMINI_MODEL,
         messages,
         temperature: 0.5,
-        max_tokens: 300,
+        max_tokens: 1000,
       }),
     }
   );
