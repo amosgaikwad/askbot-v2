@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -7,6 +8,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Allowed frontend origins
 const allowedOrigins = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
@@ -14,25 +16,49 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
+// Allow the production frontend and previews belonging to this project.
+function isAllowedOrigin(origin) {
+  if (!origin) {
+    return true;
+  }
+
+  if (allowedOrigins.includes(origin)) {
+    return true;
+  }
+
+  try {
+    const url = new URL(origin);
+
+    return (
+      url.protocol === "https:" &&
+      url.hostname.endsWith(".vercel.app") &&
+      /^askbot-v2-[a-z0-9-]+-amosgaik16-2931\.vercel\.app$/i.test(
+        url.hostname
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 const SYSTEM_PROMPT = `You are AskBot, a friendly and concise AI assistant. Be helpful and warm but get to the point. Keep answers short, usually 2-4 sentences, unless the user asks for detail. Use simple everyday language and avoid jargon. If you don't know something or aren't sure, say so plainly and never make things up. Don't pad answers with long intros or repeated summaries. Use short markdown for lists or code.`;
 
 app.disable("x-powered-by");
 
-
+// CORS
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error("Blocked CORS origin:", origin);
-        callback(new Error("Not allowed by CORS"));
+      if (isAllowedOrigin(origin)) {
+        return callback(null, true);
       }
+
+      return callback(new Error("Not allowed by CORS"));
     },
   })
 );
 
-
+// Parse JSON requests
 app.use(
   express.json({
     limit: "50kb",
@@ -66,6 +92,7 @@ function isRateLimited(ip) {
   return recentRequests.length > RATE_LIMIT;
 }
 
+// Clean up old rate-limit entries
 setInterval(() => {
   const now = Date.now();
 
@@ -183,7 +210,7 @@ async function callGroq(messages) {
   const data = await response.json();
   const reply = data?.choices?.[0]?.message?.content;
 
-  if (!reply || typeof reply !== "string") {
+  if (typeof reply !== "string" || !reply.trim()) {
     throw new Error("Groq returned an invalid response.");
   }
 
@@ -224,7 +251,7 @@ async function callGemini(messages) {
   const data = await response.json();
   const reply = data?.choices?.[0]?.message?.content;
 
-  if (!reply || typeof reply !== "string") {
+  if (typeof reply !== "string" || !reply.trim()) {
     throw new Error("Gemini returned an invalid response.");
   }
 
@@ -233,62 +260,38 @@ async function callGemini(messages) {
 
 // Provider selection with fallback
 async function generateReply(provider, messages, requestId) {
-  const selectedProvider =
-    provider === "gemini" ? "gemini" : "groq";
+  const selectedProvider = provider === "gemini" ? "gemini" : "groq";
+  const fallbackProvider = selectedProvider === "groq" ? "gemini" : "groq";
 
-  // Try the selected provider first.
-  const primaryProvider = selectedProvider;
-  const fallbackProvider =
-    selectedProvider === "groq" ? "gemini" : "groq";
-
-  const providers = [
-    {
-      name: "groq",
+  const providers = {
+    groq: {
       label: "Groq",
       call: callGroq,
     },
-    {
-      name: "gemini",
+    gemini: {
       label: "Gemini",
       call: callGemini,
     },
-  ];
+  };
 
-  const primary = providers.find(
-    (item) => item.name === primaryProvider
-  );
+  for (const name of [selectedProvider, fallbackProvider]) {
+    const current = providers[name];
 
-  const fallback = providers.find(
-    (item) => item.name === fallbackProvider
-  );
+    try {
+      const reply = await current.call(messages);
 
-  try {
-    const reply = await primary.call(messages);
-
-    return {
-      reply,
-      provider: primary.label,
-    };
-  } catch (error) {
-    console.error(
-      `[${requestId}] ${primary.label} failed:`,
-      error.message
-    );
-  }
-
-  // If the selected provider fails, try the other provider.
-  try {
-    const reply = await fallback.call(messages);
-
-    return {
-      reply,
-      provider: fallback.label,
-    };
-  } catch (error) {
-    console.error(
-      `[${requestId}] ${fallback.label} fallback failed:`,
-      error.message
-    );
+      return {
+        reply,
+        provider: current.label,
+      };
+    } catch (error) {
+      console.error(
+        `[${requestId}] ${current.label} ${
+          name === selectedProvider ? "request" : "fallback"
+        } failed:`,
+        error.message
+      );
+    }
   }
 
   throw new Error("All AI providers failed.");
@@ -310,7 +313,6 @@ app.post("/api/chat", async (req, res) => {
 
     const { messages, provider = "groq" } = req.body || {};
 
-    // Only accept the two supported providers.
     if (!["groq", "gemini"].includes(provider)) {
       return res.status(400).json({
         error: "Invalid provider. Choose Groq or Gemini.",
@@ -338,37 +340,25 @@ app.post("/api/chat", async (req, res) => {
       ...recentMessages,
     ];
 
-    try {
-      const result = await generateReply(
-        provider,
-        conversation,
-        requestId
-      );
+    const result = await generateReply(
+      provider,
+      conversation,
+      requestId
+    );
 
-      return res.json({
-        reply: result.reply,
-        provider: result.provider,
-      });
-    } catch (error) {
-      console.error(
-        `[${requestId}] All AI providers failed:`,
-        error.message
-      );
-
-      return res.status(503).json({
-        error:
-          "Our AI services are temporarily unavailable. Please try again in a moment.",
-      });
-    }
+    return res.json({
+      reply: result.reply,
+      provider: result.provider,
+    });
   } catch (error) {
     console.error(
-      `[${requestId}] Unexpected server error:`,
+      `[${requestId}] Chat request failed:`,
       error.message
     );
 
-    return res.status(500).json({
+    return res.status(503).json({
       error:
-        "Something went wrong on our server. Please try again.",
+        "Our AI services are temporarily unavailable. Please try again in a moment.",
     });
   }
 });
@@ -399,6 +389,12 @@ app.use((error, req, res, next) => {
   if (error.type === "entity.too.large") {
     return res.status(413).json({
       error: "Request is too large.",
+    });
+  }
+
+  if (error.message === "Not allowed by CORS") {
+    return res.status(403).json({
+      error: "This website is not allowed to access AskBot.",
     });
   }
 
