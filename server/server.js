@@ -5,7 +5,6 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 const app = express();
-
 const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
@@ -37,6 +36,7 @@ app.use(
   })
 );
 
+// Rate limiting
 const requestLog = new Map();
 const RATE_LIMIT = 20;
 const RATE_WINDOW = 60 * 1000;
@@ -51,7 +51,6 @@ function getClientIp(req) {
 
 function isRateLimited(ip) {
   const now = Date.now();
-
   const timestamps = requestLog.get(ip) || [];
 
   const recentRequests = timestamps.filter(
@@ -59,7 +58,6 @@ function isRateLimited(ip) {
   );
 
   recentRequests.push(now);
-
   requestLog.set(ip, recentRequests);
 
   return recentRequests.length > RATE_LIMIT;
@@ -81,11 +79,8 @@ setInterval(() => {
   }
 }, RATE_WINDOW);
 
-async function fetchWithTimeout(
-  url,
-  options,
-  timeout = 20000
-) {
+// Request timeout
+async function fetchWithTimeout(url, options, timeout = 20000) {
   const controller = new AbortController();
 
   const timer = setTimeout(() => {
@@ -102,6 +97,7 @@ async function fetchWithTimeout(
   }
 }
 
+// Validate incoming messages
 function validateMessages(messages) {
   if (!Array.isArray(messages)) {
     return "Messages must be an array.";
@@ -122,11 +118,7 @@ function validateMessages(messages) {
       return "Invalid message format.";
     }
 
-    if (
-      !["user", "assistant"].includes(
-        message.role
-      )
-    ) {
+    if (!["user", "assistant"].includes(message.role)) {
       return "Invalid message role.";
     }
 
@@ -154,17 +146,14 @@ function validateMessages(messages) {
   return null;
 }
 
+// Call Groq
 async function callGroq(messages) {
   if (!process.env.GROQ_API_KEY) {
-    throw new Error(
-      "Groq API key is not configured."
-    );
+    throw new Error("Groq API key is not configured.");
   }
 
   if (!process.env.GROQ_MODEL) {
-    throw new Error(
-      "Groq model is not configured."
-    );
+    throw new Error("Groq model is not configured.");
   }
 
   const response = await fetchWithTimeout(
@@ -185,36 +174,27 @@ async function callGroq(messages) {
   );
 
   if (!response.ok) {
-    throw new Error(
-      `Groq HTTP ${response.status}`
-    );
+    throw new Error(`Groq HTTP ${response.status}`);
   }
 
   const data = await response.json();
-
-  const reply =
-    data?.choices?.[0]?.message?.content;
+  const reply = data?.choices?.[0]?.message?.content;
 
   if (!reply || typeof reply !== "string") {
-    throw new Error(
-      "Groq returned an invalid response."
-    );
+    throw new Error("Groq returned an invalid response.");
   }
 
   return reply.trim();
 }
 
+// Call Gemini
 async function callGemini(messages) {
   if (!process.env.GEMINI_API_KEY) {
-    throw new Error(
-      "Gemini API key is not configured."
-    );
+    throw new Error("Gemini API key is not configured.");
   }
 
   if (!process.env.GEMINI_MODEL) {
-    throw new Error(
-      "Gemini model is not configured."
-    );
+    throw new Error("Gemini model is not configured.");
   }
 
   const response = await fetchWithTimeout(
@@ -235,28 +215,85 @@ async function callGemini(messages) {
   );
 
   if (!response.ok) {
-    throw new Error(
-      `Gemini HTTP ${response.status}`
-    );
+    throw new Error(`Gemini HTTP ${response.status}`);
   }
 
   const data = await response.json();
-
-  const reply =
-    data?.choices?.[0]?.message?.content;
+  const reply = data?.choices?.[0]?.message?.content;
 
   if (!reply || typeof reply !== "string") {
-    throw new Error(
-      "Gemini returned an invalid response."
-    );
+    throw new Error("Gemini returned an invalid response.");
   }
 
   return reply.trim();
 }
 
+// Provider selection with fallback
+async function generateReply(provider, messages, requestId) {
+  const selectedProvider =
+    provider === "gemini" ? "gemini" : "groq";
+
+  // Try the selected provider first.
+  const primaryProvider = selectedProvider;
+  const fallbackProvider =
+    selectedProvider === "groq" ? "gemini" : "groq";
+
+  const providers = [
+    {
+      name: "groq",
+      label: "Groq",
+      call: callGroq,
+    },
+    {
+      name: "gemini",
+      label: "Gemini",
+      call: callGemini,
+    },
+  ];
+
+  const primary = providers.find(
+    (item) => item.name === primaryProvider
+  );
+
+  const fallback = providers.find(
+    (item) => item.name === fallbackProvider
+  );
+
+  try {
+    const reply = await primary.call(messages);
+
+    return {
+      reply,
+      provider: primary.label,
+    };
+  } catch (error) {
+    console.error(
+      `[${requestId}] ${primary.label} failed:`,
+      error.message
+    );
+  }
+
+  // If the selected provider fails, try the other provider.
+  try {
+    const reply = await fallback.call(messages);
+
+    return {
+      reply,
+      provider: fallback.label,
+    };
+  } catch (error) {
+    console.error(
+      `[${requestId}] ${fallback.label} fallback failed:`,
+      error.message
+    );
+  }
+
+  throw new Error("All AI providers failed.");
+}
+
+// Chat endpoint
 app.post("/api/chat", async (req, res) => {
-  const requestId =
-    Math.random().toString(36).slice(2, 10);
+  const requestId = Math.random().toString(36).slice(2, 10);
 
   try {
     const ip = getClientIp(req);
@@ -268,10 +305,16 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    const { messages } = req.body || {};
+    const { messages, provider = "groq" } = req.body || {};
 
-    const validationError =
-      validateMessages(messages);
+    // Only accept the two supported providers.
+    if (!["groq", "gemini"].includes(provider)) {
+      return res.status(400).json({
+        error: "Invalid provider. Choose Groq or Gemini.",
+      });
+    }
+
+    const validationError = validateMessages(messages);
 
     if (validationError) {
       return res.status(400).json({
@@ -279,12 +322,10 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
-    const recentMessages = messages
-      .slice(-16)
-      .map((message) => ({
-        role: message.role,
-        content: message.content.trim(),
-      }));
+    const recentMessages = messages.slice(-16).map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+    }));
 
     const conversation = [
       {
@@ -295,39 +336,27 @@ app.post("/api/chat", async (req, res) => {
     ];
 
     try {
-      const reply =
-        await callGroq(conversation);
+      const result = await generateReply(
+        provider,
+        conversation,
+        requestId
+      );
 
       return res.json({
-        reply,
-        provider: "Groq",
+        reply: result.reply,
+        provider: result.provider,
       });
-    } catch (groqError) {
+    } catch (error) {
       console.error(
-        `[${requestId}] Groq failed:`,
-        groqError.message
+        `[${requestId}] All AI providers failed:`,
+        error.message
       );
-    }
 
-    try {
-      const reply =
-        await callGemini(conversation);
-
-      return res.json({
-        reply,
-        provider: "Gemini",
+      return res.status(503).json({
+        error:
+          "Our AI services are temporarily unavailable. Please try again in a moment.",
       });
-    } catch (geminiError) {
-      console.error(
-        `[${requestId}] Gemini failed:`,
-        geminiError.message
-      );
     }
-
-    return res.status(503).json({
-      error:
-        "Our AI services are temporarily unavailable. Please try again in a moment.",
-    });
   } catch (error) {
     console.error(
       `[${requestId}] Unexpected server error:`,
@@ -341,6 +370,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// Health check
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -348,36 +378,39 @@ app.get("/", (req, res) => {
   });
 });
 
+// Unknown endpoint
 app.use((req, res) => {
   res.status(404).json({
-    error:
-      "The requested endpoint does not exist.",
+    error: "The requested endpoint does not exist.",
   });
 });
 
-app.use(
-  (error, req, res, next) => {
-    if (
-      error instanceof SyntaxError &&
-      error.status === 400
-    ) {
-      return res.status(400).json({
-        error: "Invalid request format.",
-      });
-    }
-
-    if (error.type === "entity.too.large") {
-      return res.status(413).json({
-        error: "Request is too large.",
-      });
-    }
-
-    next(error);
+// Error handler
+app.use((error, req, res, next) => {
+  if (error instanceof SyntaxError && error.status === 400) {
+    return res.status(400).json({
+      error: "Invalid request format.",
+    });
   }
-);
 
+  if (error.type === "entity.too.large") {
+    return res.status(413).json({
+      error: "Request is too large.",
+    });
+  }
+
+  console.error("Unhandled server error:", error.message);
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  return res.status(500).json({
+    error: "An unexpected server error occurred.",
+  });
+});
+
+// Start server
 app.listen(PORT, () => {
-  console.log(
-    `AskBot server running on http://localhost:${PORT}`
-  );
+  console.log(`AskBot server running on port ${PORT}`);
 });
